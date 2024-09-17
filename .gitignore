@@ -2,5 +2,5 @@ out/
 out-csv/
 *.pdf
 *.txt
-
-test_ocr.py
+**/__pycache__/
+**/exp/
