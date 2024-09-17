@@ -30,7 +30,7 @@ def read_txt(ROI):
                     ROI
                     )
     txt = txt.strip().replace('\n', ' ')
-    
+
     if not txt:
         gray = ROI
         # gray = cv2.cvtColor(ROI, cv2.COLOR_BGR2GRAY)
@@ -42,7 +42,7 @@ def read_txt(ROI):
         txt: str = pytesseract.image_to_string(
             thresh
             )
-    # print("READ: ", txt)
+    # # print("READ: ", txt)
     
     txt = txt.strip().replace('\n', ' ').replace(',', ' ')
     # if not txt:
@@ -63,25 +63,26 @@ def retry_read_txt_until(ROI, initial_txt, condition_fn, retries=9, retry_scale=
         retry_res = cv2.resize(ROI, (0,0), fx=retry_scale, fy=retry_scale)
         try:
             txt_b = read_txt(retry_res)
+            txt_b = bytes(txt_b, 'utf-8').decode('utf-8', 'ignore')
             txt = txt if len(txt) > len(txt_b) else txt_b  # keep the one with more info
             # print(txt)
         except:
             pass
 
     # try downsampling if it didn't work
-    retries = 9
-    retry_scale = 1.0
-    # Note: if above worked, then condition_fn would return true and control wouldn't enter in this loop
-    while retries > 0 and not condition_fn(txt):
-        retries -= 1
-        retry_scale -= 0.1
-        retry_res = cv2.resize(ROI, (0,0), fx=retry_scale, fy=retry_scale)
-        try:
-            txt_b = read_txt(retry_res)
-            txt = txt if len(txt) > len(txt_b) else txt_b
-            # print(txt)
-        except:
-            pass
+    # retries = 9
+    # retry_scale = 1.0
+    # # Note: if above worked, then condition_fn would return true and control wouldn't enter in this loop
+    # while retries > 0 and not condition_fn(txt):
+    #     retries -= 1
+    #     retry_scale -= 0.1
+    #     retry_res = cv2.resize(ROI, (0,0), fx=retry_scale, fy=retry_scale)
+    #     try:
+    #         txt_b = read_txt(retry_res)
+    #         txt = txt if len(txt) > len(txt_b) else txt_b
+    #         # print(txt)
+    #     except:
+    #         pass
 
     return txt, condition_fn(txt)
 
@@ -141,11 +142,15 @@ def task(img_name, scaling_factor=1.0):
                     check_expectations(row, txt, day.lower())
                 
                     if (not txt in DAYS) and not is_time_slot(txt) and not has_rooms(txt):
-                        txt, is_satisfied = retry_read_txt_until(ROI, txt, has_rooms)
+                        room_txt, is_satisfied = retry_read_txt_until(ROI[h-60:h, :], '', has_rooms)
+                        # print(f'{txt}\t{room_txt}\t{is_satisfied}')
+                        
                         if not is_satisfied:
                             with open('./errors.txt', '+a') as f:
-                                f.write(f'[AFTER RETRIES] Could not read room for: {day} | {txt}\n')
+                                f.write(f'[AFTER RETRIES] Could not read room for: {day} | {txt} | {room_txt}\n')
                             # print(f'[AFTER RETRIES] Couldn\'t read room for: {day} | {txt}')
+                        else:
+                            txt += ' ' + room_txt
 
                 if txt in DAYS:
                     if row:
