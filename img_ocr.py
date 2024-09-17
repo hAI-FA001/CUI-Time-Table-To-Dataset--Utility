@@ -1,3 +1,4 @@
+import numpy as np
 import cv2
 import pytesseract
 import os
@@ -42,9 +43,19 @@ def read_txt(ROI):
         txt: str = pytesseract.image_to_string(
             thresh
             )
+        txt = txt.strip().replace('\n', ' ').replace(',', ' ')
     # # print("READ: ", txt)
-    
-    txt = txt.strip().replace('\n', ' ').replace(',', ' ')
+
+    if not txt:
+        gray = ROI
+        gray = cv2.erode(gray, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)))
+        _, thresh = cv2.threshold(gray, 0, 254, cv2.THRESH_BINARY)
+        thresh = cv2.erode(thresh, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)))
+        txt: str = pytesseract.image_to_string(
+            thresh
+            )
+        txt = txt.strip().replace('\n', ' ').replace(',', ' ')
+
     # if not txt:
     #     cv2.imshow('Can\'t find', ROI)
     #     cv2.waitKey(0)
@@ -53,18 +64,26 @@ def read_txt(ROI):
     #     raise ValueError(f'Could not find text...')
     return txt
 
-def retry_read_txt_until(ROI, initial_txt, condition_fn, retries=9, retry_scale=1.0):
+def retry_read_txt_until(ROI, initial_txt, condition_fn, remove_invalid_chars_fn=lambda x: x, retries=9, retry_scale=1.0):
     txt = initial_txt
     
     # try upsampling
     while retries > 0 and not condition_fn(txt):
         retries -= 1
         retry_scale += 0.1
+
         retry_res = cv2.resize(ROI, (0,0), fx=retry_scale, fy=retry_scale)
         try:
             txt_b = read_txt(retry_res)
+
             txt_b = bytes(txt_b, 'utf-8').decode('utf-8', 'ignore')
-            txt = txt if len(txt) > len(txt_b) else txt_b  # keep the one with more info
+            txt_b = remove_invalid_chars_fn(txt_b)
+            
+            if condition_fn(txt_b):  # prefer string that satisfies our condition
+                if condition_fn(txt):
+                    txt = txt if len(txt) > len(txt_b) else txt_b  # if both satisfy, keep the one with more info
+                else:
+                    txt = txt_b
             # print(txt)
         except:
             pass
@@ -118,31 +137,40 @@ def task(img_name, scaling_factor=1.0):
     global rows, row, day
 
     img = cv2.imread(f'./out/{img_name}')
-    res = cv2.resize(img, (0, 0), fx=scaling_factor, fy=scaling_factor)
+
+    # replace colors with white, so all text have white background
+    not_close_to_zero = np.mean(img, axis=-1, keepdims=False) > 70
+    img[not_close_to_zero] = np.array([255,255,255])
+
+    if scaling_factor != 1.0:
+        res = cv2.resize(img, (0, 0), fx=scaling_factor, fy=scaling_factor)
+    else:
+        res = img
     sort_cnts = get_sorted_contours(res)
 
     for cnt in sort_cnts:
         x,y,w,h = cv2.boundingRect(cnt)
-        ROI = res[y:y+h, x:x+w]
-
+        
         if abs(scaling_factor*200 - h) <= 10:
+            ROI = res[y:y+h, x:x+w]
+            
             if 0 <= ROI.mean() <= 254:
-                cv2.rectangle(res, (x,y), (x+w,y+h), (0,255,0), 2)
-                # cv2.imshow('test', res)
-                # cv2.waitKey(0)
-                # cv2.destroyAllWindows()
+                # cv2.rectangle(res, (x,y), (x+w,y+h), (0,255,0), 2)
+                
                 try:
                     txt = read_txt(ROI)
                 except:
                     txt = ''
+                
                 txt, is_satisfied = retry_read_txt_until(ROI, txt, lambda t: bool(t))
                 case_sensitive_txt = txt
                 txt = txt.lower()
+                
                 if day:
                     check_expectations(row, txt, day.lower())
-                
-                    if (not txt in DAYS) and not is_time_slot(txt) and not has_rooms(txt):
-                        room_txt, is_satisfied = retry_read_txt_until(ROI[h-60:h, :], '', has_rooms)
+                    
+                    if txt not in DAYS and not is_time_slot(txt) and not has_rooms(txt):
+                        room_txt, is_satisfied = retry_read_txt_until(ROI[h-60:h, :], '', has_rooms, lambda x: re.sub(r'[^A-Za-z0-9-]', '', x))
                         # print(f'{txt}\t{room_txt}\t{is_satisfied}')
                         
                         if not is_satisfied:
@@ -150,10 +178,13 @@ def task(img_name, scaling_factor=1.0):
                                 f.write(f'[AFTER RETRIES] Could not read room for: {day} | {txt} | {room_txt}\n')
                             # print(f'[AFTER RETRIES] Couldn\'t read room for: {day} | {txt}')
                         else:
-                            txt += ' ' + room_txt
+                            txt += ' ' + room_txt.lower()
+                            case_sensitive_txt += ' ' + room_txt
+                        #     print('APPEND', txt, case_sensitive_txt)
+                        # print()
 
                 if txt in DAYS:
-                    if row:
+                    if row and any([bool(r.strip()) for r in row]):
                         rows[day] = rows.get(day, []) + [row]
                     day = txt
                     row = []
@@ -162,7 +193,7 @@ def task(img_name, scaling_factor=1.0):
                     for _ in range(int(w // (100*scaling_factor))):
                         row.append(case_sensitive_txt)
             else:
-                cv2.rectangle(res, (x,y), (x+w,y+h), (0,0,255), 2)
+                # cv2.rectangle(res, (x,y), (x+w,y+h), (0,0,255), 2)
                 row.append(' ')
     
     return txt
@@ -190,7 +221,7 @@ if __name__ == '__main__':
     with open('./errors.txt', 'w') as f:
         pass
 
-    write_interval = 50
+    write_interval = 100
     img_names = os.listdir('./out/')
     img_names = sorted(img_names, key=get_img_num)
 
@@ -198,7 +229,7 @@ if __name__ == '__main__':
         print(f'[{idx+1}/{len(img_names)}] [{(idx+1) / len(img_names) * 100:7.2f}%] Processing {img_name}...')
         txt = dur_wrapper(task, img_name)
         
-        if (idx+1) % write_interval == 0:
+        if (idx + 1) % write_interval == 0:
             print(f'\nSaving data ({idx+1}/{len(img_names)})...')
             dur_wrapper(write_slots, rows)
             print()
